@@ -7,6 +7,8 @@
 
 int main(int argc, char** argv)
 {
-	create_socks5_server("", "");
-	printf("im test\n");
+	struct socks5_server* server = create_socks5_server("tohold.cloudapp.net", "3000");
+
+	// Run 
+	ev_run(server->loop, 0);
 }

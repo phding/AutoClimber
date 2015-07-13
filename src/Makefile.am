@@ -12,7 +12,8 @@ bin_PROGRAMS = autoclimber
 # Source
 
 autoclimber_SOURCES = autoclimber.c \
-						socks5.c
+						socks5.c \
+						logging.c
 
 # Link
 
