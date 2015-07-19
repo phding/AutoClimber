@@ -16,6 +16,8 @@ static struct socks5_client* create_socsk5_client(int fd);
 static void accept_cb(EV_P_ ev_io *w, int revents);
 static void free_connections(struct ev_loop *loop);
 static int create_and_bind(const char *addr, const char *port);
+static void client_recv_cb(EV_P_ ev_io *w, int revents);
+static void client_send_cb(EV_P_ ev_io *w, int revents);
 
 // Socket Utilites
 static int setnonblocking(int fd)
@@ -53,6 +55,11 @@ struct socks5_server* create_socks5_server(const char *addr, const char *port)
 	if(listen_fd < 0){
 		FATAL("create and bind error");
 	}
+
+    if (listen(listen_fd, SOMAXCONN) == -1) {
+        FATAL("listen() error");
+    }
+
 	setnonblocking(listen_fd);
 	server->fd = listen_fd;
     LOGI("TCP socsk5 enabled");
@@ -120,7 +127,6 @@ static int create_and_bind(const char *addr, const char *port)
     return listen_sock;
 }
 
-
 static struct socks5_client* create_socsk5_client(int fd)
 {
 	struct socks5_client *client;
@@ -128,11 +134,15 @@ static struct socks5_client* create_socsk5_client(int fd)
 
     memset(client, 0, sizeof(struct socks5_client));
 
+    client->recv_handler.client = client;
+    client->send_handler.client = client;
+
+    ev_io_init(&client->recv_handler.io, client_recv_cb, fd, EV_READ);
+    ev_io_init(&client->send_handler.io, client_send_cb, fd, EV_WRITE);
+
     client->fd = fd;
     return client;
 }
-
-
 
 // Accept incoming connection
 static void accept_cb(EV_P_ ev_io *w, int revents)
@@ -141,14 +151,34 @@ static void accept_cb(EV_P_ ev_io *w, int revents)
     int client_fd = accept(server->fd, NULL, NULL);
     if (client_fd == -1) {
         ERROR("accept");
+        exit(-1);
         return;
     }
 
     setnonblocking(client_fd);
     int opt = 1;
     setsockopt(client_fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+#ifdef SO_NOSIGPIPE
+    setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+#endif
 
     struct socks5_client *client = create_socsk5_client(client_fd);
+    ev_io_start(EV_A_ & client->recv_handler.io);
 
-    free(client);
+}
+
+// Handling client incoming message
+static void client_recv_cb(EV_P_ ev_io *w, int revents)
+{
+    struct socks5_client *client = (struct socks5_client *)w;
+
+    if(client_recv_handler != NULL){
+        (*client_recv_handler)(client, revents);
+    }
+}
+
+
+static void client_send_cb(EV_P_ ev_io *w, int revents)
+{
+    
 }

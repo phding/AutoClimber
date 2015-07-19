@@ -6,33 +6,34 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h> 
 
 #define TIME_FORMAT "%Y-%m-%d %H:%M:%S"
 
 extern FILE * logfile;
+extern bool console_enable;
+char logging_buffer[200];
 
-#define LOGI(format, ...)                                                        \
-    do {                                                                         \
-        if (logfile != NULL) {                                                   \
-            time_t now = time(NULL);                                             \
-            char timestr[20];                                                    \
-            strftime(timestr, 20, TIME_FORMAT, localtime(&now));                 \
-            fprintf(logfile, " %s INFO: " format "\n", timestr, ## __VA_ARGS__); \
-            fflush(logfile); }                                                   \
-    }                                                                            \
+#define LOGG(level, format, ...)                                                        \
+ do {                                                                                   \
+        if(logfile != NULL || console_enable) {                                         \
+            time_t now = time(NULL);                                                    \
+            char timestr[20];                                                           \
+            strftime(timestr, 20, TIME_FORMAT, localtime(&now));                        \
+            sprintf(logging_buffer, " %s " level ": " format "\n", timestr, ## __VA_ARGS__); \
+        }                                                                               \
+        if(console_enable == true){                                                     \
+            printf("%s", logging_buffer);                                               \
+        }                                                                               \
+        if(logfile != NULL){                                                            \
+            fprintf(logfile, "%s", logging_buffer);                                     \
+            fflush(logfile);                                                            \
+        }                                                                               \
+    }                                                                                   \
     while (0)
 
-#define LOGE(format, ...)                                        \
-    do {                                                         \
-        if (logfile != NULL) {                                   \
-            time_t now = time(NULL);                             \
-            char timestr[20];                                    \
-            strftime(timestr, 20, TIME_FORMAT, localtime(&now)); \
-            fprintf(logfile, " %s ERROR: " format "\n", timestr, \
-                    ## __VA_ARGS__);                             \
-            fflush(logfile); }                                   \
-    }                                                            \
-    while (0)
+#define LOGI(format, ...) LOGG("INFO", format , ## __VA_ARGS__)
+#define LOGE(format, ...) LOGG("ERROR", format , ## __VA_ARGS__)
 
 void ERROR(const char *s);
 void FATAL(const char *msg);

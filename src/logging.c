@@ -1,6 +1,7 @@
 #include "logging.h"
 
 FILE * logfile;
+bool console_enable = true;
 
 void ERROR(const char *s)
 {
