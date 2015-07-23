@@ -1,5 +1,6 @@
 
 #include "socks5.h"
+#include "socks5_proxy.h"
 #include "logging.h"
 
 // Library
@@ -12,6 +13,8 @@ int main(int argc, char** argv)
 	const char* port = "3000";
 	LOGI("Try to bind %s:%s", addr, port);
 	struct socks5_server* server = create_socks5_server(addr, port);
+
+	init_socks5_proxy();
 
 	// Run 
 	ev_run(server->loop, 0);

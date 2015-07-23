@@ -33,6 +33,7 @@ char logging_buffer[200];
     while (0)
 
 #define LOGI(format, ...) LOGG("INFO", format , ## __VA_ARGS__)
+#define LOGW(format, ...) LOGG("WARNING", format , ## __VA_ARGS__)
 #define LOGE(format, ...) LOGG("ERROR", format , ## __VA_ARGS__)
 
 void ERROR(const char *s);

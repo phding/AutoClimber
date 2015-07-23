@@ -4,17 +4,18 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <netdb.h>
 #include <sys/types.h>
+#include <netdb.h>
 
 #include "socks5.h"
 #include "logging.h"
+
+bool verbose = true;
 
 
 // Function declaration
 static struct socks5_client* create_socsk5_client(int fd);
 static void accept_cb(EV_P_ ev_io *w, int revents);
-static void free_connections(struct ev_loop *loop);
 static int create_and_bind(const char *addr, const char *port);
 static void client_recv_cb(EV_P_ ev_io *w, int revents);
 static void client_send_cb(EV_P_ ev_io *w, int revents);
@@ -29,17 +30,28 @@ static int setnonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-static void free_connections(struct ev_loop *loop)
+void clean_socks5_client(EV_P_ struct socks5_client* client)
 {
+    if (client != NULL) {
+        ev_io_stop(EV_A_ & client->recv_handler.io);
+        ev_io_stop(EV_A_ & client->send_handler.io);
+        close(client->fd);
+
+        if (client->buf != NULL) {
+            free(client->buf);
+        }
+        free(client);
+    }
 }
 
 void clean_socks5_server(struct socks5_server* server)
 {
 	// Clean up
     ev_io_stop(server->loop, &server->io);
-    free_connections(server->loop);
+    close(server->fd);
 
-    free(server->sockaddr);
+    //free(server->sockaddr);
+    free(server);
 }
 
 // Socks5 handler
@@ -62,7 +74,9 @@ struct socks5_server* create_socks5_server(const char *addr, const char *port)
 
 	setnonblocking(listen_fd);
 	server->fd = listen_fd;
-    LOGI("TCP socsk5 enabled");
+    if(verbose){
+        LOGI("TCP socsk5 enabled");
+    }
 
 	// Get libev to loop
 	server->loop = EV_DEFAULT;
@@ -76,7 +90,6 @@ struct socks5_server* create_socks5_server(const char *addr, const char *port)
 	LOGI("Listening at %s:%s", addr, port);
 	return server;
 }
-
 
 static int create_and_bind(const char *addr, const char *port)
 {
@@ -131,9 +144,10 @@ static struct socks5_client* create_socsk5_client(int fd)
 {
 	struct socks5_client *client;
     client = malloc(sizeof(struct socks5_client));
-
     memset(client, 0, sizeof(struct socks5_client));
 
+
+    client->buf = malloc(BUF_SIZE);
     client->recv_handler.client = client;
     client->send_handler.client = client;
 
@@ -147,6 +161,7 @@ static struct socks5_client* create_socsk5_client(int fd)
 // Accept incoming connection
 static void accept_cb(EV_P_ ev_io *w, int revents)
 {
+    LOGI("Accept");
     struct socks5_server *server = (struct socks5_server *)w;
     int client_fd = accept(server->fd, NULL, NULL);
     if (client_fd == -1) {
@@ -172,11 +187,138 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
 {
     struct socks5_client *client = (struct socks5_client *)w;
 
+    ssize_t r = recv(client->fd, client->buf, BUF_SIZE, 0);
+
+    if(r == 0){
+        // Connection is going to close
+        return;
+    }
+    else if(r < 0){
+        // Error occur
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // no data
+            
+            // continue to wait for recv
+            return;
+        } else {
+            ERROR("client_recv_io");
+            // Close
+            return;
+        }
+    }
+
+
+    if(client->stage == 0){
+        struct method_select_request *request = (struct method_select_request*)request;
+        // check version
+        if(request->ver != 0x05){
+            // Unknown version
+            LOGE("Unknown method: %x", request->ver);
+            clean_socks5_client(EV_A_ client);
+            return;
+        }
+
+        // Send authentication mode
+        struct method_select_response response;
+        response.ver = SVERSION;
+        response.method = 0;
+        char *send_buf = (char *)&response;
+        send(client->fd, send_buf, sizeof(response), 0);
+
+        client->stage = 1;
+    }
+    else if(client->stage == 1){
+        struct socks5_request *request = (struct socks5_request *)client->buf;
+        char host[256], port[16];
+        char ss_addr_to_send[320];
+
+        ssize_t addr_len = 0;
+        ss_addr_to_send[addr_len++] = request->atyp;
+
+        if(request->cmd == 0x01){
+            // Get remote address and port
+            if(request->atyp == IPV4){
+                // IP V4
+                size_t in_addr_len = sizeof(struct in_addr);
+                memcpy(ss_addr_to_send + addr_len, client->buf + 4, in_addr_len +
+                       2);
+                addr_len += in_addr_len + 2;
+
+                if (verbose) {
+                    uint16_t p =
+                        ntohs(*(uint16_t *)(client->buf + 4 + in_addr_len));
+                    sprintf(host, "%s", client->buf + 4);
+                    //dns_ntop(AF_INET, (const void *)(buf + 4),
+                    //         host, INET_ADDRSTRLEN);
+                    sprintf(port, "%d", p);
+                }
+            }else if(request->atyp == IPV6){
+                size_t in6_addr_len = sizeof(struct in6_addr);
+                memcpy(ss_addr_to_send + addr_len, client->buf + 4, in6_addr_len +
+                       2);
+                addr_len += in6_addr_len + 2;
+
+                if (verbose) {
+                    uint16_t p =
+                        ntohs(*(uint16_t *)(client->buf + 4 + in6_addr_len));
+
+                    sprintf(host, "%s", client->buf + 4);
+                    //dns_ntop(AF_INET6, (const void *)(buf + 4),
+                    //         host, INET6_ADDRSTRLEN);
+                    sprintf(port, "%d", p);
+                }
+
+            }else if(request->atyp == DOMAIN){
+                // Domain name
+                uint8_t name_len = *(uint8_t *)(client->buf + 4);
+                ss_addr_to_send[addr_len++] = name_len;
+                memcpy(ss_addr_to_send + addr_len, client->buf + 4 + 1, name_len +
+                       2);
+                addr_len += name_len + 2;
+
+                if (verbose) {
+                    uint16_t p =
+                        ntohs(*(uint16_t *)(client->buf + 4 + 1 + name_len));
+                    memcpy(host, client->buf + 4 + 1, name_len);
+                    host[name_len] = '\0';
+                    sprintf(port, "%d", p);
+                }
+            }else{
+                LOGE("Unsupport IP protocol: %x", request->atyp);
+                clean_socks5_client(EV_A_ client);
+                return;
+            }
+
+            client->stage = 5;
+
+            if (verbose) {
+                LOGI("connect to %s:%s", host, port);
+            }
+            
+        }
+        else if(request->cmd == 0x03){
+            // UDP ASSOCIATE X'03
+            LOGW("UDP ASSOCIATE");
+            clean_socks5_client(EV_A_ client);
+            return;
+        }else{
+           LOGE("unsupported cmd: %d", request->cmd);
+            struct socks5_response response;
+            response.ver = SVERSION;
+            response.rep = CMD_NOT_SUPPORTED;
+            response.rsv = 0;
+            response.atyp = 1;
+            char *send_buf = (char *)&response;
+            send(client->fd, send_buf, sizeof(struct socks5_response), 0);
+            clean_socks5_client(EV_A_ client);
+            return; 
+        }
+    }
+
     if(client_recv_handler != NULL){
         (*client_recv_handler)(client, revents);
     }
 }
-
 
 static void client_send_cb(EV_P_ ev_io *w, int revents)
 {
