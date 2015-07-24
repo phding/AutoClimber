@@ -8,11 +8,32 @@
 
 
 #define SVERSION 0x05
-#define CONNECT 0x01
+
+// Command type
+#define CMD_CONNECT 0x01
+#define CMD_BIND 0x01
+#define CMD_UDP_ASSOCIATE 0x01
+
+// ATYP
 #define IPV4 0x01
 #define DOMAIN 0x03
 #define IPV6 0x04
-#define CMD_NOT_SUPPORTED 0x07
+
+// Authentication
+#define AUTH_NO_REQUIRED 0x00
+#define AUTH_GSSAPI 0x01
+#define AUTH_USERNAME_PASSWORD 0x02
+
+// Response type
+#define RES_SUCCEEDED 0x00
+#define RES_GENERAL_SOCKS_FAILURE 0X01
+#define RES_CONNECTION_NOT_ALLOWED_BY_RULESET 0X02
+#define RES_NETWORK_UNREACHABLE 0X03
+#define RES_HOST_UNREACHABLE 0X04
+#define RES_CONNECTION_REFUSED 0X05
+#define RES_TTL_EXPIRED 0X06
+#define RES_CMD_NOT_SUPPORTED 0x07
+#define RES_ADDRESS_TYPE_NOT_SUPPORT 0X08
 
 #pragma pack(push)
 #pragma pack(1)
@@ -72,10 +93,10 @@ struct socks5_response {
 // public function
 struct socks5_server* create_socks5_server(const char *addr, const char *port);
 void clean_socks5_server(struct socks5_server* server);
+void clean_socks5_client(EV_P_ struct socks5_client* client);
 
 // external handler
-void (*client_recv_handler)(struct socks5_client *client, int revents);
-void (*client_send_handler)(struct socks5_client *client, int revents);
+void (*client_recv_handler)(EV_P_ struct socks5_client *client, struct socks5_request* request);
 
 
 #endif // _SOCKS5_H
