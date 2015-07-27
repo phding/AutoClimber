@@ -62,7 +62,8 @@ struct socks5_client {
 	struct socket_io_handler recv_handler;
 	struct socket_io_handler send_handler;
 	char* buf;
-    int recv_size;
+    int buf_offset;
+    int buf_len;
 	void* ptr;
 };
 

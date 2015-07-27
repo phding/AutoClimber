@@ -37,6 +37,7 @@ struct proxy_node* create_proxy_node()
 
 static void client_recv_data(EV_P_ struct socks5_client *client)
 {
+    int ret;
     struct proxy_node* proxy_node;
     struct proxy_remote_client* remote;
 
@@ -47,18 +48,29 @@ static void client_recv_data(EV_P_ struct socks5_client *client)
         remote = proxy_node->remote_client;
         if(proxy_node->connected == true){
             // send to remote
+            ret = send(remote->fd, client->buf + client->buf_offset, client->buf_len, 0);
+            if(ret < 0){
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    ERROR("client_recv_data");
+                    // close and free
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_socks5_client(EV_A_ client);
+                }
+                return;
+            }
+            else if(ret < client->buf_len){
+                client->buf_len -= ret;
+                client->buf_offset += ret;
 
-            // Stop
-            ev_io_stop(EV_A_ & client->recv_handler.io);
-            ev_io_start(EV_A_ & remote->send_handler.io);
+                // congestion
+                ev_io_stop(EV_A_ & client->recv_handler.io);
+                ev_io_start(EV_A_ & remote->send_handler.io);
+            }
         }else{
             LOGW("Not connected yet");
-            return;
         }
-
     }else{
         LOGE("No such proxy node was found");
-        return;
     }
 }
 
@@ -175,37 +187,55 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
 
 static void remote_recv_cb(EV_P_ ev_io *w, int revents)
 {
+    int ret;
     struct proxy_io_handler* io_handler = (struct proxy_io_handler*)w;
     struct proxy_remote_client* remote = io_handler->remote;
     struct proxy_node* node = remote->node;
     struct socks5_client* client = node->socks5_client;
+    
     //LOGI("Receiving from remote");
 
     // Receive
-    remote->recv_size = recv(remote->fd, remote->buf, BUF_SIZE, 0);
-    if(client->recv_size == 0){
+    remote->buf_len = recv(remote->fd, remote->buf, BUF_SIZE, 0);
+    if(remote->buf_len == 0){
         // Connection is going to close
         close_and_free_remote(EV_A_ remote);
         close_and_free_socks5_client(EV_A_ client);
         return;
     }
-    else if(client->recv_size < 0){
-        // Error occur
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // no data
-            // continue to wait for recv
-            return;
-        } else {
+    else if(remote->buf_len < 0){
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
             ERROR("remote_recv_cb");
+            // close and free
             close_and_free_remote(EV_A_ remote);
             close_and_free_socks5_client(EV_A_ client);
-            // Close
-            return;
+        }
+        return;
+    }else {
+        // Send
+        ret = send(client->fd, remote->buf + remote->buf_offset, remote->buf_len, 0);
+        if(ret < 0){
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // no data
+                // continue to wait for recv
+                return;
+            } else {
+                ERROR("failed to redirect package to client");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_socks5_client(EV_A_ client);
+                // Close
+                return;
+            }
+        }
+        else if(ret < remote->buf_len){
+            remote->buf_len -= ret;
+            remote->buf_offset += ret;
+
+            // congestion
+            ev_io_stop(EV_A_ & remote->recv_handler.io);
+            ev_io_start(EV_A_ & client->send_handler.io);
         }
     }
-
-    ev_io_start(EV_A_ & client->send_handler.io);
-    ev_io_stop(EV_A_ & remote->recv_handler.io);
 }
 
 static void client_send_data(EV_P_ struct socks5_client *client)
@@ -214,24 +244,41 @@ static void client_send_data(EV_P_ struct socks5_client *client)
     struct proxy_node* proxy_node;
     struct proxy_remote_client* remote;
 
-    //LOGI("Se from client");
+    //LOGI("Send to client");
 
     if(client->ptr != NULL){
+
         proxy_node = (struct proxy_node*)client->ptr;
         remote = proxy_node->remote_client;
         if(proxy_node->connected == true){
-            // send to remote
-            ret = send(client->fd, remote->buf, remote->recv_size, 0);
-            if(ret < remote->recv_size){
-                ERROR("failed to redirect package to client");
+
+            if(remote->buf_len == 0){
+                // close and free
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_socks5_client(EV_A_ client);
-                return;
-            }
+            }else{
+                ret = send(client->fd, remote->buf + remote->buf_offset, remote->buf_len, 0);
+                if(ret < 0){
+                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                        ERROR("client_send_data");
+                        // close and free
+                        close_and_free_remote(EV_A_ remote);
+                        close_and_free_socks5_client(EV_A_ client);
+                    }
+                    return;
+                }else if(ret < remote->buf_len){
 
-            // Stop
-            ev_io_start(EV_A_ & remote->recv_handler.io);
-            ev_io_stop(EV_A_ & client->send_handler.io);
+                    // partly sent, move memory, wait for the next time to send
+                    remote->buf_len -= ret;
+                    remote->buf_offset += ret;
+                    return;
+                }else{
+                    remote->buf_len = 0;
+                    remote->buf_offset = 0;
+                    ev_io_stop(EV_A_ & client->send_handler.io);
+                    ev_io_start(EV_A_ & remote->recv_handler.io);
+                }
+            }
         }else{
             LOGW("Not connected yet");
             return;
@@ -288,6 +335,9 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
                 return;
             }
 
+            ev_io_start(EV_A_ & client->recv_handler.io);
+            ev_io_stop(EV_A_ & remote->send_handler.io);
+
         } else {
             // not connected
             ERROR("getpeername");
@@ -296,17 +346,32 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
             close_and_free_socks5_client(EV_A_ client);
             return;
         }
+    }else if(client->buf_len == 0){
+        // close and free
+        close_and_free_remote(EV_A_ remote);
+        close_and_free_socks5_client(EV_A_ client);
     }else{
-        ret = send(remote->fd, client->buf, client->recv_size, 0);
-        if(ret < client->recv_size){
-            LOGE("failed to redirect package to remote");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_socks5_client(EV_A_ client);
+        // has something to send
+        ret = send(remote->fd, client->buf + client->buf_offset, client->buf_len, 0);
+        if(ret < 0){
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                ERROR("remote_send_cb");
+                // close and free
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_socks5_client(EV_A_ client);
+            }
             return;
+        }else if(ret < client->buf_len){
+            // partly sent, move memory, wait for the next time to send
+            client->buf_len -= ret;
+            client->buf_offset += ret;
+            return;
+        }else{
+            client->buf_len = 0;
+            client->buf_offset = 0;
+            ev_io_start(EV_A_ & client->recv_handler.io);
+            ev_io_stop(EV_A_ & remote->send_handler.io);
         }
-
-        ev_io_start(EV_A_ & client->recv_handler.io);
-        ev_io_stop(EV_A_ & remote->send_handler.io);
     }
 }
 

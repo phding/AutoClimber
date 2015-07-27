@@ -192,13 +192,13 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
     struct socks5_client *client = (struct socks5_client *)handler->client;
     struct socks5_response response;
 
-    client->recv_size = recv(client->fd, client->buf, BUF_SIZE, 0);
+    client->buf_len = recv(client->fd, client->buf, BUF_SIZE, 0);
 
-    if(client->recv_size == 0){
+    if(client->buf_len == 0){
         // Connection is going to close
         return;
     }
-    else if(client->recv_size < 0){
+    else if(client->buf_len < 0){
         // Error occur
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data

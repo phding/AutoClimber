@@ -28,7 +28,8 @@ struct proxy_io_handler{
 struct proxy_remote_client{
 	int fd;
 	char* buf;
-    int recv_size;
+	int buf_offset;
+    int buf_len;
 	struct sockaddr addr;
 	struct proxy_node* node;
 	int addr_len;
