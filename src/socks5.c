@@ -12,7 +12,7 @@
 
 bool verbose = true;
 
-
+int active_conn = 0;
 // Function declaration
 static struct socks5_client* create_socsk5_client(int fd);
 static void accept_cb(EV_P_ ev_io *w, int revents);
@@ -21,7 +21,7 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents);
 static void client_send_cb(EV_P_ ev_io *w, int revents);
 
 // Socket Utilites
-static int setnonblocking(int fd)
+int setnonblocking(int fd)
 {
     int flags;
     if (-1 == (flags = fcntl(fd, F_GETFL, 0))) {
@@ -30,8 +30,10 @@ static int setnonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-void clean_socks5_client(EV_P_ struct socks5_client* client)
+void close_and_free_socks5_client(EV_P_ struct socks5_client* client)
 {
+    active_conn--;
+    LOGI("Close socks5 client");
     if (client != NULL) {
         ev_io_stop(EV_A_ & client->recv_handler.io);
         ev_io_stop(EV_A_ & client->send_handler.io);
@@ -44,7 +46,7 @@ void clean_socks5_client(EV_P_ struct socks5_client* client)
     }
 }
 
-void clean_socks5_server(struct socks5_server* server)
+void close_and_free_socks5_server(struct socks5_server* server)
 {
 	// Clean up
     ev_io_stop(server->loop, &server->io);
@@ -161,7 +163,8 @@ static struct socks5_client* create_socsk5_client(int fd)
 // Accept incoming connection
 static void accept_cb(EV_P_ ev_io *w, int revents)
 {
-    LOGI("Accept");
+    LOGI("Accept, active conn = %d", active_conn);
+    active_conn++;
     struct socks5_server *server = (struct socks5_server *)w;
     int client_fd = accept(server->fd, NULL, NULL);
     if (client_fd == -1) {
@@ -189,13 +192,13 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
     struct socks5_client *client = (struct socks5_client *)handler->client;
     struct socks5_response response;
 
-    ssize_t r = recv(client->fd, client->buf, BUF_SIZE, 0);
+    client->recv_size = recv(client->fd, client->buf, BUF_SIZE, 0);
 
-    if(r == 0){
+    if(client->recv_size == 0){
         // Connection is going to close
         return;
     }
-    else if(r < 0){
+    else if(client->recv_size < 0){
         // Error occur
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data
@@ -204,22 +207,19 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("client_recv_io");
-            clean_socks5_client(EV_A_ client);
+            close_and_free_socks5_client(EV_A_ client);
             // Close
             return;
         }
     }
 
-
-    LOGI("incoming");
     if(client->stage == 0){
-        LOGI("Stage 0");
         struct method_select_request *request = (struct method_select_request*)client->buf;
         // check version
         if(request->ver != SVERSION){
             // Unknown version
             LOGE("Unknown socks version: %x", request->ver);
-            clean_socks5_client(EV_A_ client);
+            close_and_free_socks5_client(EV_A_ client);
             return;
         }
 
@@ -234,11 +234,10 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
     else if(client->stage == 1){
-        LOGI("Stage 1");
         struct socks5_request *request = (struct socks5_request *)client->buf;
         client->stage = 2;
-        if(client_recv_handler != NULL){
-            (*client_recv_handler)(EV_A_ client, request);
+        if(client_recv_request_handler != NULL){
+            (*client_recv_request_handler)(EV_A_ client, request);
         }else{
             // Send 
             response.ver = SVERSION;
@@ -247,15 +246,25 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
             response.rsv = 0;
             char* send_buf = (char*)&response;
             send(client->fd, send_buf, sizeof(struct socks5_response), 0);
-            clean_socks5_client(EV_A_ client);
+            close_and_free_socks5_client(EV_A_ client);
             return;
+        }
+    }else if(client->stage == 2){
+        // Send and receive
+        if(client_recv_data_handler != NULL){
+            (*client_recv_data_handler)(EV_A_ client);
         }
     }else{
         LOGI("another stage");
+        // Now runs 
     }
 }
 
 static void client_send_cb(EV_P_ ev_io *w, int revents)
 {
-    
+    struct socket_io_handler* handler = (struct socket_io_handler*)w;
+    struct socks5_client *client = (struct socks5_client *)handler->client;
+    if(client_send_data_handler != NULL){
+        (*client_send_data_handler)(EV_A_ client);
+    }
 }

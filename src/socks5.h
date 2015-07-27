@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #define BUF_SIZE 2048
+#define MAX_CONNECT_TIMEOUT 30 //30sec
 
 
 #define SVERSION 0x05
@@ -39,6 +40,7 @@
 #pragma pack(1)
 
 extern bool verbose;
+extern int active_conn;
 
 // Structure
 struct socks5_server {
@@ -60,6 +62,7 @@ struct socks5_client {
 	struct socket_io_handler recv_handler;
 	struct socket_io_handler send_handler;
 	char* buf;
+    int recv_size;
 	void* ptr;
 };
 
@@ -92,11 +95,14 @@ struct socks5_response {
 
 // public function
 struct socks5_server* create_socks5_server(const char *addr, const char *port);
-void clean_socks5_server(struct socks5_server* server);
-void clean_socks5_client(EV_P_ struct socks5_client* client);
+void close_and_free_socks5_server(struct socks5_server* server);
+void close_and_free_socks5_client(EV_P_ struct socks5_client* client);
+int setnonblocking(int fd);
 
 // external handler
-void (*client_recv_handler)(EV_P_ struct socks5_client *client, struct socks5_request* request);
+void (*client_recv_request_handler)(EV_P_ struct socks5_client *client, struct socks5_request* request);
+void (*client_recv_data_handler)(EV_P_ struct socks5_client *client);
+void (*client_send_data_handler)(EV_P_ struct socks5_client *client);
 
 
 #endif // _SOCKS5_H
