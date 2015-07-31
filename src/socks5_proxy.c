@@ -65,6 +65,7 @@ static void client_recv_data(EV_P_ struct socks5_client *client)
                 // congestion
                 ev_io_stop(EV_A_ & client->recv_handler.io);
                 ev_io_start(EV_A_ & remote->send_handler.io);
+                ev_timer_start(EV_A_ & remote->send_handler.watcher);
             }
         }else{
             LOGW("Not connected yet");
@@ -163,26 +164,30 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
 
     // TODO: check whether go direct or via another proxy
 
-    remote = proxy_node->remote_client = create_direct_remote_connection(host, port);
-    remote->node = proxy_node;
-    proxy_node->direct = true;
-
-    if(proxy_node->remote_client == NULL){
-        LOGE("invalid remote");
+    remote = create_direct_remote_connection(host, port);
+    if(remote == NULL){
+        // Unable to create direct remote connection
+        LOGW("Unable to create direct connection");
 
         send_socks5_response(client->fd, RES_NETWORK_UNREACHABLE);
         close_and_free_socks5_client(EV_A_ client);
         return;
     }
 
+    proxy_node->remote_client = remote;
+    remote->node = proxy_node;
+    proxy_node->direct = true;
     // Connect to remote
     connect(remote->fd, (struct sockaddr *)&(remote->addr), remote->addr_len);
+    LOGI("Start");
+
+    // Now listen to remote
+    ev_io_start(EV_A_ & remote->recv_handler.io);
 
     // wait on remote connected event
-    //ev_io_stop(EV_A_ & client->recv_handler.io);
-    ev_io_start(EV_A_ & remote->send_handler.io);
-    ev_io_start(EV_A_ & remote->recv_handler.io);
     ev_timer_start(EV_A_ & remote->send_handler.watcher);
+    ev_io_start(EV_A_ & remote->send_handler.io);
+
 }
 
 static void remote_recv_cb(EV_P_ ev_io *w, int revents)
@@ -192,6 +197,8 @@ static void remote_recv_cb(EV_P_ ev_io *w, int revents)
     struct proxy_remote_client* remote = io_handler->remote;
     struct proxy_node* node = remote->node;
     struct socks5_client* client = node->socks5_client;
+
+    ev_timer_stop(EV_A_ & remote->recv_handler.watcher);
     
     //LOGI("Receiving from remote");
 
@@ -297,6 +304,7 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
     struct proxy_remote_client* remote = io_handler->remote;
     struct proxy_node* node = remote->node;
     struct socks5_client* client = node->socks5_client;
+    ev_timer_stop(EV_A_ & remote->send_handler.watcher);
 
     if (!node->connected) {
         struct sockaddr_storage addr;
@@ -306,7 +314,6 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
             LOGI("Connected");
             node->connected = true;
             ev_io_stop(EV_A_ & remote->send_handler.io);
-            ev_timer_stop(EV_A_ & remote->send_handler.watcher);
 
             // Send successful
             //send_socks5_response(node->socks5_client->fd, RES_SUCCEEDED);
@@ -337,6 +344,7 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
 
             ev_io_start(EV_A_ & client->recv_handler.io);
             ev_io_stop(EV_A_ & remote->send_handler.io);
+            return;
 
         } else {
             // not connected
@@ -369,6 +377,7 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
         }else{
             client->buf_len = 0;
             client->buf_offset = 0;
+            ev_timer_start(EV_A_ & remote->recv_handler.watcher);
             ev_io_start(EV_A_ & client->recv_handler.io);
             ev_io_stop(EV_A_ & remote->send_handler.io);
         }
@@ -377,6 +386,7 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
 
 static void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)
 {
+    LOGI("Timeout");
     struct proxy_io_handler *io_handler = (struct proxy_io_handler *)(((void *)watcher)- sizeof(ev_io));
     struct proxy_remote_client *remote = (struct proxy_remote_client *)io_handler->remote;
     struct proxy_node* node = remote->node;
@@ -428,6 +438,7 @@ static struct proxy_remote_client* create_remote(int fd)
     ev_io_init(&remote->recv_handler.io, remote_recv_cb, fd, EV_READ);
     ev_io_init(&remote->send_handler.io, remote_send_cb, fd, EV_WRITE);
     ev_timer_init(&remote->send_handler.watcher, remote_timeout_cb, MAX_CONNECT_TIMEOUT, 0);
+    ev_timer_init(&remote->recv_handler.watcher, remote_timeout_cb, MAX_CONNECT_TIMEOUT, 0);
     remote->recv_handler.remote = remote;
     remote->send_handler.remote = remote;
     return remote;

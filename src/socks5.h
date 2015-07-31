@@ -92,8 +92,6 @@ struct socks5_response {
     char atyp;
 };
 
-
-
 // public function
 struct socks5_server* create_socks5_server(const char *addr, const char *port);
 void close_and_free_socks5_server(struct socks5_server* server);

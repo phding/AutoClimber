@@ -13,6 +13,7 @@
 bool verbose = true;
 
 int active_conn = 0;
+
 // Function declaration
 static struct socks5_client* create_socsk5_client(int fd);
 static void accept_cb(EV_P_ ev_io *w, int revents);
@@ -59,6 +60,9 @@ void close_and_free_socks5_server(struct socks5_server* server)
 // Socks5 handler
 struct socks5_server* create_socks5_server(const char *addr, const char *port)
 {
+
+    signal(SIGPIPE, SIG_IGN);
+
 	// Create socks5 server
 	struct socks5_server *server;
 	server = malloc(sizeof(struct socks5_server));
@@ -168,8 +172,7 @@ static void accept_cb(EV_P_ ev_io *w, int revents)
     struct socks5_server *server = (struct socks5_server *)w;
     int client_fd = accept(server->fd, NULL, NULL);
     if (client_fd == -1) {
-        ERROR("accept");
-        exit(-1);
+        ERROR("Unable to accept");
         return;
     }
 
@@ -202,10 +205,12 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents)
         // Error occur
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data
+            LOGI("Wouldblock");
             
             // continue to wait for recv
             return;
         } else {
+            LOGI("client_recv_io");
             ERROR("client_recv_io");
             close_and_free_socks5_client(EV_A_ client);
             // Close

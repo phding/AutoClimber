@@ -17,13 +17,11 @@ struct proxy_node {
 
 };
 
-
 struct proxy_io_handler{
 	ev_io io;
 	ev_timer watcher;
 	struct proxy_remote_client* remote;
 };
-
 
 struct proxy_remote_client{
 	int fd;
