@@ -101,15 +101,15 @@ static int create_and_bind(const char *addr, const char *port)
 {
 	struct addrinfo hints;
     struct addrinfo *result, *rp;
-    int s, listen_sock;
+    int ret, listen_sock;
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = AF_UNSPEC;     /* Return IPv4 and IPv6 choices */
     hints.ai_socktype = SOCK_STREAM; /* We want a TCP socket */
 
-    s = getaddrinfo(addr, port, &hints, &result);
-    if (s != 0) {
-        LOGI("getaddrinfo: %s", gai_strerror(s));
+    ret = getaddrinfo(addr, port, &hints, &result);
+    if (ret != 0) {
+        LOGI("getaddrinfo: %s", gai_strerror(ret));
         return -1;
     }
 
@@ -125,9 +125,25 @@ static int create_and_bind(const char *addr, const char *port)
         setsockopt(listen_sock, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-        s = bind(listen_sock, rp->ai_addr, rp->ai_addrlen);
-        if (s == 0) {
+#ifdef TCP_FASTOPEN
+        int qlen = 5;
+        /* change the socket options to TCO_FASTOPEN */
+        ret = setsockopt(listen_sock, SOL_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
+
+        if (ret == -1) {
+            if (errno == EPROTONOSUPPORT || errno == ENOPROTOOPT) {
+                LOGE("fast open is not supported on this platform");
+            } else {
+                FATAL("setsockopt");
+            }
+        }
+#endif
+
+
+        ret = bind(listen_sock, rp->ai_addr, rp->ai_addrlen);
+        if (ret == 0) {
             /* We managed to bind successfully! */
+
             break;
         } else {
             ERROR("bind");

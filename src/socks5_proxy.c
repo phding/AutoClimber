@@ -46,7 +46,36 @@ static void client_recv_data(EV_P_ struct socks5_client *client)
     if(client->ptr != NULL){
         proxy_node = (struct proxy_node*)client->ptr;
         remote = proxy_node->remote_client;
-        if(proxy_node->connected == true){
+
+        if(proxy_node->connected == false){
+#ifdef TCP_FASTOPEN
+            // connect to 
+            ret = sendto(remote->fd, client->buf + client->buf_offset, client->buf_len, MSG_FASTOPEN, (struct sockaddr *)&(remote->addr), remote->addr_len);
+            if(ret == -1){
+                if (errno == EINPROGRESS) {
+                    //LOGI("INPROGRESS");
+                    // in progress, wait until connected
+                } else {
+                    ERROR("sendto");
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_socks5_client(EV_A_ client);
+                    return;
+                }
+            } else if (ret < client->buf_len) {
+                LOGI("more to send");
+                remote->buf_len -= ret;
+                remote->buf_offset = ret;
+            }
+#else
+
+            // Connect to remote
+            connect(remote->fd, (struct sockaddr *)&(remote->addr), remote->addr_len);
+
+#endif
+            ev_io_stop(EV_A_ & client->recv_handler.io);
+            ev_io_start(EV_A_ & remote->send_handler.io);
+            ev_timer_start(EV_A_ & remote->send_handler.watcher);
+        } else{
             // send to remote
             ret = send(remote->fd, client->buf + client->buf_offset, client->buf_len, 0);
             if(ret < 0){
@@ -67,8 +96,6 @@ static void client_recv_data(EV_P_ struct socks5_client *client)
                 ev_io_start(EV_A_ & remote->send_handler.io);
                 ev_timer_start(EV_A_ & remote->send_handler.watcher);
             }
-        }else{
-            LOGW("Not connected yet");
         }
     }else{
         LOGE("No such proxy node was found");
@@ -81,6 +108,7 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
     char ss_addr_to_send[320];
 
     ssize_t addr_len = 0;
+    int ret;
     ss_addr_to_send[addr_len++] = request->atyp;
     struct proxy_node* proxy_node;
     struct proxy_remote_client* remote;
@@ -177,16 +205,36 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
     proxy_node->remote_client = remote;
     remote->node = proxy_node;
     proxy_node->direct = true;
-    // Connect to remote
-    connect(remote->fd, (struct sockaddr *)&(remote->addr), remote->addr_len);
-    LOGI("Start");
 
-    // Now listen to remote
-    ev_io_start(EV_A_ & remote->recv_handler.io);
+    // Send successful
+    struct sockaddr_in sock_addr;
+    memset(&sock_addr, 0, sizeof(sock_addr));
+    struct socks5_response response;
+    response.ver = SVERSION;
+    response.rep = RES_SUCCEEDED;
+    response.rsv = 0;
+    response.atyp = 1;
 
-    // wait on remote connected event
-    ev_timer_start(EV_A_ & remote->send_handler.watcher);
-    ev_io_start(EV_A_ & remote->send_handler.io);
+    memcpy(client->buf, &response, sizeof(struct socks5_response));
+    memcpy(client->buf + sizeof(struct socks5_response),
+           &sock_addr.sin_addr, sizeof(sock_addr.sin_addr));
+    memcpy(client->buf + sizeof(struct socks5_response) +
+           sizeof(sock_addr.sin_addr),
+           &sock_addr.sin_port, sizeof(sock_addr.sin_port));
+    int reply_size = sizeof(struct socks5_response) +
+                     sizeof(sock_addr.sin_addr) +
+                     sizeof(sock_addr.sin_port);
+    ret = send(client->fd, client->buf, reply_size, 0);
+    if(ret < reply_size){
+        LOGE("failed to send fake reply");
+        close_and_free_remote(EV_A_ remote);
+        close_and_free_socks5_client(EV_A_ client);
+        return;
+    }
+
+    ev_io_start(EV_A_ & client->recv_handler.io);
+
+    return;
 
 }
 
@@ -311,41 +359,10 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
         socklen_t len = sizeof addr;
         int r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
-            LOGI("Connected");
+
             node->connected = true;
-            ev_io_stop(EV_A_ & remote->send_handler.io);
-
-            // Send successful
-            //send_socks5_response(node->socks5_client->fd, RES_SUCCEEDED);
-            struct sockaddr_in sock_addr;
-            memset(&sock_addr, 0, sizeof(sock_addr));
-            struct socks5_response response;
-            response.ver = SVERSION;
-            response.rep = RES_SUCCEEDED;
-            response.rsv = 0;
-            response.atyp = 1;
-
-            memcpy(client->buf, &response, sizeof(struct socks5_response));
-            memcpy(client->buf + sizeof(struct socks5_response),
-                   &sock_addr.sin_addr, sizeof(sock_addr.sin_addr));
-            memcpy(client->buf + sizeof(struct socks5_response) +
-                   sizeof(sock_addr.sin_addr),
-                   &sock_addr.sin_port, sizeof(sock_addr.sin_port));
-            int reply_size = sizeof(struct socks5_response) +
-                             sizeof(sock_addr.sin_addr) +
-                             sizeof(sock_addr.sin_port);
-            int ret = send(client->fd, client->buf, reply_size, 0);
-            if(ret < reply_size){
-                LOGE("failed to send fake reply");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_socks5_client(EV_A_ client);
-                return;
-            }
-
-            ev_io_start(EV_A_ & client->recv_handler.io);
-            ev_io_stop(EV_A_ & remote->send_handler.io);
-            return;
-
+            ev_timer_start(EV_A_ & remote->recv_handler.watcher);
+            ev_io_start(EV_A_ & remote->recv_handler.io);
         } else {
             // not connected
             ERROR("getpeername");
@@ -358,8 +375,10 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_socks5_client(EV_A_ client);
-    }else{
-        // has something to send
+        return;
+    }
+
+    if(client->buf_len > 0){
         ret = send(remote->fd, client->buf + client->buf_offset, client->buf_len, 0);
         if(ret < 0){
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -377,11 +396,11 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
         }else{
             client->buf_len = 0;
             client->buf_offset = 0;
-            ev_timer_start(EV_A_ & remote->recv_handler.watcher);
-            ev_io_start(EV_A_ & client->recv_handler.io);
-            ev_io_stop(EV_A_ & remote->send_handler.io);
         }
     }
+
+    ev_io_start(EV_A_ & client->recv_handler.io);
+    ev_io_stop(EV_A_ & remote->send_handler.io);
 }
 
 static void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)

@@ -11,10 +11,10 @@ bin_PROGRAMS = autoclimber
 
 # Source
 
-autoclimber_SOURCES = autoclimber.c \
-						socks5_proxy.c \
+autoclimber_SOURCES = logging.c \
 						socks5.c \
-						logging.c
+						socks5_proxy.c \
+						autoclimber.c
 
 # Link
 
