@@ -6,6 +6,8 @@
 
 #include "socks5.h"
 
+
+
 void init_socks5_proxy();
 
 struct proxy_node {
@@ -35,5 +37,8 @@ struct proxy_remote_client{
 	struct proxy_io_handler send_handler;
 };
 
+
+
+struct proxy_remote_client* (*create_remote_client)(char* host, char* port);
 
 #endif // _SOCKS5_PROXY_H

@@ -12,8 +12,8 @@
 
 // Command type
 #define CMD_CONNECT 0x01
-#define CMD_BIND 0x01
-#define CMD_UDP_ASSOCIATE 0x01
+#define CMD_BIND 0x02
+#define CMD_UDP_ASSOCIATE 0x03
 
 // ATYP
 #define IPV4 0x01
@@ -39,7 +39,6 @@
 #pragma pack(push)
 #pragma pack(1)
 
-extern bool verbose;
 extern int active_conn;
 
 // Structure

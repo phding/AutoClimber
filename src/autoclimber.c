@@ -4,7 +4,6 @@
 #include "logging.h"
 
 // Library
-#include <stdio.h>
 
 
 int main(int argc, char** argv)
@@ -22,4 +21,5 @@ int main(int argc, char** argv)
     LOGI("Sock5 closed");
     ev_io_stop(server->loop, &server->io);
 
+    return 0;
 }

@@ -4,17 +4,19 @@
 #include <netinet/tcp.h>
 #include <unistd.h> // close function
 #include <sys/types.h>
-#include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <stdbool.h>
 
 #include "socks5_proxy.h"
 #include "logging.h"
+#include "config.h"
 
 
 static void client_send_data(EV_P_ struct socks5_client *client);
 static void client_recv_data(EV_P_ struct socks5_client *client);
 static void client_recv_request(EV_P_ struct socks5_client *client, struct socks5_request* request);
-static struct proxy_remote_client * create_remote(int fd);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_send_cb(EV_P_ ev_io *w, int revents);
 static void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
@@ -190,9 +192,15 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
     proxy_node->socks5_client = client;
 
 
-    // TODO: check whether go direct or via another proxy
+    proxy_node->direct = true;
 
-    remote = create_direct_remote_connection(host, port);
+
+    if(proxy_node->direct){
+        remote = create_direct_remote_connection(host, port);
+    }else{
+        remote = (*create_remote_client)(host, port);
+    }
+
     if(remote == NULL){
         // Unable to create direct remote connection
         LOGW("Unable to create direct connection");
@@ -204,7 +212,6 @@ static void client_recv_request(EV_P_ struct socks5_client *client, struct socks
 
     proxy_node->remote_client = remote;
     remote->node = proxy_node;
-    proxy_node->direct = true;
 
     // Send successful
     struct sockaddr_in sock_addr;
@@ -465,6 +472,8 @@ static struct proxy_remote_client* create_remote(int fd)
 
 struct proxy_remote_client* create_direct_remote_connection(char* host, char* port)
 {
+
+    struct addrinfo 
     int ret, remote_fd, addr_len;
     struct addrinfo hints;
     struct addrinfo *result, *rp;

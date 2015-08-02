@@ -8,9 +8,8 @@
 #include <netdb.h>
 
 #include "socks5.h"
+#include "config.h"
 #include "logging.h"
-
-bool verbose = true;
 
 int active_conn = 0;
 
